@@ -1,5 +1,5 @@
 import poly2graph as p2g
-print(p2g.__version__)
+print(f'poly2graph version: {p2g.__version__}')
 import math
 import os
 import numpy as np

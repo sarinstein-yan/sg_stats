@@ -1,5 +1,5 @@
 import poly2graph as p2g
-print(p2g.__version__)
+print(f'poly2graph version: {p2g.__version__}')
 import math
 import os
 import numpy as np
@@ -300,7 +300,7 @@ def compute_graph_properties_for_pairs(
         ]
 
         # Use a pool of workers to process samples in parallel
-        with mp.Pool(processes=num_workers) as pool:
+        with mp.dummy.Pool(num_workers) as pool:
             results = pool.map(process_single_sample, argument_list)
 
         # 'results' is a list of (i, props) tuples, in the same order as argument_list
@@ -416,7 +416,7 @@ def group_statistics_by_pq(mean_std_dict, properties):
     return grouped_stats
  
  
-def main_workflow(p_values, q_values, A_min, A_max, num_A, N, properties, 
+def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties, 
                   num_workers=1, output_folder='plots_A_analysis', plot_nancases=False):
     """
     Execute the workflow to generate graph properties, compute statistics, and plot results.
@@ -470,7 +470,7 @@ def main_workflow(p_values, q_values, A_min, A_max, num_A, N, properties,
             mu=0,
             sigma=current_sigma,
             properties=properties,
-            # num_workers=num_workers,
+            num_workers=num_workers,
             plot_nancases=plot_nancases,
             return_correlation=True
         )
