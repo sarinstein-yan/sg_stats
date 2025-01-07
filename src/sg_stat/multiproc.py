@@ -9,6 +9,7 @@ from collections import defaultdict
 import seaborn as sns
 import pandas as pd
 from itertools import combinations
+import multiprocessing as mp
 
 
 
@@ -196,31 +197,64 @@ def compute_graph_properties(G, properties):
     return props
 
 
-
-
-def compute_graph_properties_for_pairs(irreducible_pairs, N, perturb=True, distribution='gaussian',
-                                       mu=0, sigma=1, properties=None, plot_nancases=False,
-                                       return_correlation=False):
+def process_single_sample(args):
     """
-    Generate graph properties for each irreducible (p, q) pair.
-
+    Worker function to handle a single polynomial sample.
+    
     Parameters:
-        irreducible_pairs (list of tuples): List of (p, q) pairs.
-        N (int): Number of samples per pair.
-        perturb (bool): Whether to apply perturbations.
-        distribution (str or callable): Distribution type for perturbations.
-        mu (float): Mean or lower bound for the distribution.
-        sigma (float): Std or upper bound for the distribution.
-        properties (list): List of properties to compute.
-        plot_nancases (bool): Whether to plot graphs with NaN properties.
-        return_correlation (bool): Whether to compute and return correlation matrices.
+        args (tuple): Contains all arguments needed for computation.
+            - i (int) : Index of the sample.
+            - c (list or np.array) : Polynomial coefficients for this sample.
+            - p (int) : p-value from the irreducible (p, q) pair.
+            - q (int) : q-value from the irreducible (p, q) pair.
+            - properties (list): List of properties to compute.
+            - plot_nancases (bool): Whether or not to plot graphs with NaN properties.
 
     Returns:
-        dict or tuple:
-            - If return_correlation is False:
-                dict: Nested dictionary with properties for each (p, q) pair.
-            - If return_correlation is True:
-                tuple: (graph_properties_dict, correlation_dict)
+        (i, dict): The index of the sample and the dictionary of computed properties.
+    """
+    i, c, p, q, properties, plot_nancases = args
+    
+    # Compute E_maxes and the spectral graph
+    E_maxes = p2g.auto_Emaxes(c)
+    sg = p2g.spectral_graph(
+        c, E_max=E_maxes, 
+        E_len=256, E_splits=4,
+        s2g_kwargs={'add_pts': False}
+    )
+    # G = sg
+    G = convert_to_simple_graph(sg)
+    props = compute_graph_properties(G, properties)
+
+    # Optionally handle NaN cases, but be aware that plotting from multiple processes
+    # can sometimes cause race conditions or performance issues. Usually, you might
+    # want to do plotting in the parent process if possible. 
+    if plot_nancases:
+        scalar_props = {k: v for k, v in props.items() if isinstance(v, float)}
+        nan_props = [k for k, v in scalar_props.items() if np.isnan(v)]
+        if nan_props:
+            print(f"NaN encountered for (p,q)=({p},{q}) at sample {i}. NaN in: {nan_props}")
+            plt.figure(figsize=(6, 4))
+            pos = nx.spring_layout(G, seed=42)
+            nx.draw(G, pos=pos, with_labels=True, node_size=500, node_color="lightblue", edge_color="gray")
+            plt.title(f"(p,q)=({p},{q}), Sample={i}, NaN in: {nan_props}")
+            # plt.show()
+
+    return i, props
+
+def compute_graph_properties_for_pairs(
+        irreducible_pairs, N, 
+        perturb=True, 
+        distribution='gaussian',
+        mu=0, sigma=1, 
+        properties=None, 
+        num_workers=None,
+        plot_nancases=False,
+        return_correlation=False
+    ):
+    """
+    Generate graph properties for each irreducible (p, q) pair.
+    Now parallelized using multiprocessing.
     """
     if properties is None:
         properties = [
@@ -246,8 +280,9 @@ def compute_graph_properties_for_pairs(irreducible_pairs, N, perturb=True, distr
     if return_correlation:
         correlation_dict = {pair: {} for pair in irreducible_pairs}
 
+    # Iterate over irreducible pairs
     for (p, q) in irreducible_pairs:
-        # Always generate N samples, with or without perturbations
+        # Generate N samples (with or without perturbations)
         poly_samples = generate_polynomial(
             q, p,
             random_perturbations=perturb,
@@ -256,32 +291,23 @@ def compute_graph_properties_for_pairs(irreducible_pairs, N, perturb=True, distr
             sigma=sigma,
             sample=N
         )
-        for i, c in enumerate(poly_samples):
-            E_maxes = p2g.auto_Emaxes(c)
-            sg = p2g.spectral_graph(
-                    c, E_max=E_maxes, 
-                    E_len=256, E_splits=4,
-                    s2g_kwargs={'add_pts': False}
-                )
-            G = sg
-            # G = convert_to_simple_graph(sg)
-            props = compute_graph_properties(G, properties)
 
-            # Store scalar properties
+        # Build argument list for multiprocessing
+        # Each entry is a tuple containing all the arguments needed by 'process_single_sample'
+        argument_list = [
+            (i, c, p, q, properties, plot_nancases)
+            for i, c in enumerate(poly_samples)
+        ]
+
+        # Use a pool of workers to process samples in parallel
+        with mp.Pool(processes=num_workers) as pool:
+            results = pool.map(process_single_sample, argument_list)
+
+        # 'results' is a list of (i, props) tuples, in the same order as argument_list
+        # Store these in the main dictionary
+        for i, props in results:
             for prop in properties:
                 graph_properties_dict[(p, q)][prop].append(props.get(prop, np.nan))
-
-            # Handle NaN cases
-            if plot_nancases:
-                scalar_props = {k: v for k, v in props.items() if isinstance(v, float)}
-                nan_props = [k for k, v in scalar_props.items() if np.isnan(v)]
-                if nan_props:
-                    print(f"NaN encountered for (p,q)=({p},{q}) at sample {i}. NaN in: {nan_props}")
-                    plt.figure(figsize=(6, 4))
-                    pos = nx.spring_layout(G, seed=42)
-                    nx.draw(G, pos=pos, with_labels=True, node_size=500, node_color="lightblue", edge_color="gray")
-                    plt.title(f"(p,q)=({p},{q}), Sample={i}, NaN in: {nan_props}")
-                    plt.show()
 
     # Compute correlations if requested
     if return_correlation:
@@ -444,6 +470,7 @@ def main_workflow(p_values, q_values, A_min, A_max, num_A, N, properties,
             mu=0,
             sigma=current_sigma,
             properties=properties,
+            # num_workers=num_workers,
             plot_nancases=plot_nancases,
             return_correlation=True
         )
@@ -458,6 +485,7 @@ def main_workflow(p_values, q_values, A_min, A_max, num_A, N, properties,
         # Store aggregated stats for this A
         aggregated_stats_over_A[A] = aggregated_stats
     return correlations_over_A,aggregated_stats_over_A,A_values,output_folder
+     
 
 
 
@@ -472,6 +500,7 @@ if __name__ == "__main__":
     A_max = 1.5                  # Maximum A value
     num_A = 15             # Number of A samples
     N = int(25)                  # Number of samples per (p, q) pair and A
+    num_workers = None              # Number of parallel workers
     properties = [
         "number_of_nodes",
         "number_of_edges",
@@ -498,6 +527,7 @@ if __name__ == "__main__":
         A_max=A_max,
         num_A=num_A,
         N=N,
+        num_workers=num_workers,
         properties=properties,
         output_folder=output_folder,
         plot_nancases=plot_nancases
