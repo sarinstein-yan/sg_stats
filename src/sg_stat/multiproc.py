@@ -299,7 +299,7 @@ def compute_graph_properties_for_pairs(
             for i, c in enumerate(poly_samples)
         ]
 
-        # Use a pool of workers to process samples in parallel
+        # Thread parallelism
         with mp.dummy.Pool(num_workers) as pool:
             results = pool.map(process_single_sample, argument_list)
 
@@ -495,7 +495,7 @@ def compute_avg_correlations_grouped(correlation_dict, properties):
 
  
 def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties, 
-                  num_workers=1, output_folder='plots_A_analysis', plot_nancases=False):
+                  num_workers=None, output_folder='plots_A_analysis', plot_nancases=False):
     """
     Execute the workflow to generate graph properties, compute statistics, and plot results.
 
@@ -548,10 +548,9 @@ def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties,
             mu=0,
             sigma=current_sigma,
             properties=properties,
+            num_workers=num_workers,
             plot_nancases=plot_nancases, return_correlation=True
         )
-         
-
 
         # Compute statistics (mean and std) for each (p, q)
         mean_std_dict = compute_statistics(graph_properties_dict, properties)
@@ -566,6 +565,7 @@ def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties,
         aggregated_correlations = compute_avg_correlations_grouped(correlations, properties)
         # Store aggregated correlations for this A
         correlations_over_A[A] = aggregated_correlations
+
     return correlations_over_A,aggregated_stats_over_A,A_values,output_folder
      
 

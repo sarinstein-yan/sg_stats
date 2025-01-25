@@ -1,6 +1,0 @@
-# macOS system files
-.DS_Store
-
-# Ignore plots_A_analysis directory
-plots_A_analysis/
- 
