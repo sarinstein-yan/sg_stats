@@ -355,6 +355,7 @@ def compute_statistics(graph_properties_dict, properties):
     return mean_std_dict
 
 
+
 def group_statistics_by_pq(mean_std_dict, properties):
     """
     Aggregate statistics by grouping (p, q) pairs based on p+q and p-q.
@@ -392,29 +393,106 @@ def group_statistics_by_pq(mean_std_dict, properties):
         for prop in properties:
             if prop in props:
                 # Aggregate for p+q
-                grouped_stats['p_plus_q'][p_plus_q][prop] = grouped_stats['p_plus_q'][p_plus_q].get(prop, {'mean': [], 'std': []})
-                grouped_stats['p_plus_q'][p_plus_q][prop]['mean'].append(props[prop]['mean'])
-                grouped_stats['p_plus_q'][p_plus_q][prop]['std'].append(props[prop]['std'])
+                group_pq = grouped_stats['p_plus_q'][p_plus_q].setdefault(prop, {'sum_mean': 0.0, 'sum_std': 0.0, 'count': 0})
+                group_pq['sum_mean'] += props[prop]['mean']
+                group_pq['sum_std'] += props[prop]['std']
+                group_pq['count'] += 1
 
                 # Aggregate for p-q
-                grouped_stats['p_minus_q'][p_minus_q][prop] = grouped_stats['p_minus_q'][p_minus_q].get(prop, {'mean': [], 'std': []})
-                grouped_stats['p_minus_q'][p_minus_q][prop]['mean'].append(props[prop]['mean'])
-                grouped_stats['p_minus_q'][p_minus_q][prop]['std'].append(props[prop]['std'])
-
-    # Compute overall mean and std for grouped statistics
+                group_pq_diff = grouped_stats['p_minus_q'][p_minus_q].setdefault(prop, {'sum_mean': 0.0, 'sum_std': 0.0, 'count': 0})
+                group_pq_diff['sum_mean'] += props[prop]['mean']
+                group_pq_diff['sum_std'] += props[prop]['std']**2 # Using the average std of n indep random variables formula 
+                # i.e sqrt(sigma_1^2+sigma_2^2+sigma_3^2+sigma_5^2+...sigma_n^2)=average_sigma
+                group_pq_diff['count'] += 1
+ 
+    # Compute overall mean and std for grouped statistics incrementally
     for group in ['p_plus_q', 'p_minus_q']:
         for key in grouped_stats[group]:
             for prop in properties:
                 if prop in grouped_stats[group][key]:
-                    means = grouped_stats[group][key][prop]['mean']
-                    stds = grouped_stats[group][key][prop]['std']
+                    sum_mean = grouped_stats[group][key][prop]['sum_mean']
+                    sum_std = grouped_stats[group][key][prop]['sum_std']
+                    count = grouped_stats[group][key][prop]['count']
                     grouped_stats[group][key][prop] = {
-                        'mean': np.nanmean(means) if means else np.nan,
-                        'std': np.nanstd(stds) if stds else np.nan
+                        'mean': sum_mean / count if count > 0 else np.nan,
+                        'std': np.sqrt(sum_std) / count if count > 0 else np.nan  #  sqrt(sigma_1^2+sigma_2^2+sigma_3^2+sigma_5^2+...sigma_n^2)=average_sigma
                     }
-
+    
     return grouped_stats
  
+ 
+
+
+def compute_avg_correlations_grouped(correlation_dict, properties):
+    """
+    Compute average Pearson correlation coefficients for each (p + q) and (p - q) group using a counting method.
+    
+    Parameters:
+        correlation_dict (dict): Correlation data for a specific A.
+                                 Structure: { (p, q): {prop_x: {prop_y: corr, ...}, ...}, ...}
+        properties (list): List of properties to consider for correlation.
+    
+    Returns:
+        dict: Average correlations grouped by 'p_plus_q' and 'p_minus_q'.
+              Structure:
+              {
+                  'p_plus_q': {
+                      group_key: { (prop_x, prop_y): avg_corr, ... },
+                      ...
+                  },
+                  'p_minus_q': {
+                      group_key: { (prop_x, prop_y): avg_corr, ... },
+                      ...
+                  }
+              }
+    """
+    # Initialize dictionaries to accumulate sum and count for correlations
+    sum_correlations = {
+        'p_plus_q': defaultdict(lambda: defaultdict(float)),
+        'p_minus_q': defaultdict(lambda: defaultdict(float))
+    }
+    count_correlations = {
+        'p_plus_q': defaultdict(lambda: defaultdict(int)),
+        'p_minus_q': defaultdict(lambda: defaultdict(int))
+    }
+    
+    # Iterate over each (p, q) pair and its correlation matrix
+    for (p, q), prop_corr in correlation_dict.items():
+        p_plus_q = p + q
+        p_minus_q = p - q
+
+        # Iterate over each unique property pair to collect correlations
+        for i in range(len(properties)):
+            for j in range(i + 1, len(properties)):
+                prop_x = properties[i]
+                prop_y = properties[j]
+                corr = prop_corr.get(prop_x, {}).get(prop_y, np.nan)
+                if not np.isnan(corr):
+                    pair = (prop_x, prop_y)
+                    # Accumulate sum and count for p+q
+                    sum_correlations['p_plus_q'][p_plus_q][pair] += corr
+                    count_correlations['p_plus_q'][p_plus_q][pair] += 1
+                    # Accumulate sum and count for p-q
+                    sum_correlations['p_minus_q'][p_minus_q][pair] += corr
+                    count_correlations['p_minus_q'][p_minus_q][pair] += 1
+    
+    # Compute the average correlation for each group and property pair
+    final_avg_correlations = {
+        'p_plus_q': defaultdict(dict),
+        'p_minus_q': defaultdict(dict)
+    }
+
+    for group_type in ['p_plus_q', 'p_minus_q']:
+        for group_key in sum_correlations[group_type]:
+            for pair in sum_correlations[group_type][group_key]:
+                total_corr = sum_correlations[group_type][group_key][pair]
+                total_count = count_correlations[group_type][group_key][pair]
+                avg_corr = total_corr / total_count if total_count > 0 else np.nan
+                final_avg_correlations[group_type][group_key][pair] = avg_corr
+
+    return final_avg_correlations
+ 
+
  
 def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties, 
                   num_workers=1, output_folder='plots_A_analysis', plot_nancases=False):
@@ -470,11 +548,10 @@ def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties,
             mu=0,
             sigma=current_sigma,
             properties=properties,
-            num_workers=num_workers,
-            plot_nancases=plot_nancases,
-            return_correlation=True
+            plot_nancases=plot_nancases, return_correlation=True
         )
-        correlations_over_A[A] = correlations
+         
+
 
         # Compute statistics (mean and std) for each (p, q)
         mean_std_dict = compute_statistics(graph_properties_dict, properties)
@@ -484,6 +561,11 @@ def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties,
 
         # Store aggregated stats for this A
         aggregated_stats_over_A[A] = aggregated_stats
+
+        # Group correlations by p + q and p - q
+        aggregated_correlations = compute_avg_correlations_grouped(correlations, properties)
+        # Store aggregated correlations for this A
+        correlations_over_A[A] = aggregated_correlations
     return correlations_over_A,aggregated_stats_over_A,A_values,output_folder
      
 

@@ -1,4 +1,5 @@
-from sg_stat import main_workflow, plot_properties_vs_A_separate, plot_correlations_vs_A_separate
+
+from sg_stat import main_workflow_mpc, plot_properties_vs_A_separate, plot_correlations_vs_A_separate
 
 if __name__ == "__main__":
 
@@ -28,7 +29,7 @@ if __name__ == "__main__":
     plot_nancases = False  # Set to True if you want to plot NaN cases
 
     # Execute the workflow
-    correlations_over_A,aggregated_stats_over_A,A_values,output_folder= main_workflow(
+    correlations_over_A,aggregated_stats_over_A,A_values,output_folder= main_workflow_mpc(
         p_values=p_values,
         q_values=q_values,
         A_min=A_min,
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     # Step 6: Plot correlations between properties over A
     print("Plotting correlations between properties over A...")
     plot_correlations_vs_A_separate(
-            correlations_over_A=correlations_over_A,
+            correlations_over_A,
             A_values=A_values,
             properties=properties,
             output_folder=output_folder

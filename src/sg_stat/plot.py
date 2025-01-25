@@ -135,130 +135,127 @@ def plot_properties_vs_A_separate(aggregated_stats_over_A, A_values, properties,
     print(f"{'STD_MEAN' if with_error_bars else 'ONLY_MEAN'} plots have been generated and saved in the '{subfolder}' subdirectory.")
  
 
-
-def plot_correlations_vs_A_separate(correlations_over_A, A_values, properties, output_folder):
+def plot_correlations_vs_A_separate(
+    aggregated_correlations, 
+    A_values, 
+    properties, 
+    output_folder
+):
     """
-    Plot the Pearson correlation coefficients between pairs of properties against A,
-    grouped by p+q and p-q, and save the plots in a 'Correlations' subdirectory.
-    
+    Plot correlation coefficients between property pairs against perturbation amplitude A,
+    grouped by 'p_plus_q' and 'p_minus_q', and save the plots in the specified output folder.
+
     Parameters:
-        correlations_over_A (dict): Dictionary with A as keys and correlation_dict as values.
-                                    correlation_dict structure: { (p, q): {prop_x: {prop_y: corr, ...}, ...}, ...}
-        A_values (array-like): Array of A values.
-        properties (list): List of properties to consider for correlation.
-        output_folder (str): Directory to save the correlation plots.
-    """
-    import itertools
+        aggregated_correlations (dict): Nested dictionary with the following structure:
+            {
+                A_value: {
+                    'p_plus_q': {
+                        group_key_int: { (prop_x, prop_y): avg_corr, ... },
+                        ...
+                    },
+                    'p_minus_q': {
+                        group_key_int: { (prop_x, prop_y): avg_corr, ... },
+                        ...
+                    }
+                },
+                ...
+            }
+        A_values (list or array-like): Iterable of perturbation amplitude values.
+        properties (list): List of property names to generate property pairs.
+        output_folder (str): Directory path where the plots will be saved.
 
-    # Define the subdirectory for correlation plots
-    correlation_subfolder = 'Correlations'
-    correlation_subfolder_path = os.path.join(output_folder, correlation_subfolder)
-    os.makedirs(correlation_subfolder_path, exist_ok=True)
-    
-    # Generate all unique pairs of properties
+    Returns:
+        None
+    """
+    # Define subdirectory for correlations
+    subfolder = 'CORRELATIONS'
+    subfolder_path = os.path.join(output_folder, subfolder)
+    os.makedirs(subfolder_path, exist_ok=True)
+
+    # Generate all unique property pairs
     property_pairs = list(combinations(properties, 2))
-    
-    # Define color maps
-    color_map_sum = plt.get_cmap('tab10')
-    color_map_diff = plt.get_cmap('tab20')
-    
-    # Precompute p+q and p-q for each (p, q) pair
-    pq_groups = defaultdict(lambda: defaultdict(list))  # {group_type: {group_key: [(p, q), ...], ...}, ...}
-    for A in A_values:
-        correlation_dict = correlations_over_A.get(A, {})
-        for (p, q) in correlation_dict.keys():
-            p_plus_q = p + q
-            p_minus_q = p - q
-            pq_groups['p_plus_q'][p_plus_q].append((p, q))
-            pq_groups['p_minus_q'][p_minus_q].append((p, q))
-    
-    # Iterate over each pair of properties to plot their correlation over A
-    for pair in property_pairs:
-        prop_x, prop_y = pair
-        pair_label = f"{prop_x} vs {prop_y}"
-        
-        # --- Plot Correlations Grouped by p+q ---
+
+    # Collect and sort unique group_keys for 'p_plus_q' and 'p_minus_q'
+    pq_groups = {
+        'p_plus_q': sorted({
+            pq 
+            for A in A_values 
+            for pq in aggregated_correlations.get(A, {}).get('p_plus_q', {})
+        }),
+        'p_minus_q': sorted({
+            pq 
+            for A in A_values 
+            for pq in aggregated_correlations.get(A, {}).get('p_minus_q', {})
+        })
+    }
+
+    # Define color maps for different group types
+    color_maps = {
+        'p_plus_q': plt.get_cmap('tab10'),
+        'p_minus_q': plt.get_cmap('tab20')
+    }
+
+    # Helper function to plot and save correlations
+    def plot_correlation(prop_pair, group_type):
         plt.figure(figsize=(12, 8))
-        legend_handles_sum = []
-        for idx, (pq_sum, pairs) in enumerate(sorted(pq_groups['p_plus_q'].items())):
-            correlation_coeffs = []
+        color_map = color_maps[group_type]
+        
+        for idx, group_key in enumerate(pq_groups[group_type]):
+            # Extract correlation coefficients for the current property pair across all A_values
+            correlations = []
             for A in A_values:
-                corr_values = []
-                for (p, q) in pairs:
-                    corr_matrix = correlations_over_A.get(A, {}).get((p, q), {})
-                    corr = corr_matrix.get(prop_x, {}).get(prop_y, np.nan)
-                    if not np.isnan(corr):
-                        corr_values.append(corr)
-                # Compute average correlation for this group and A
-                if corr_values:
-                    avg_corr = np.nanmean(corr_values)
-                else:
-                    avg_corr = np.nan
-                correlation_coeffs.append(avg_corr)
+                group_data = aggregated_correlations.get(A, {}).get(group_type, {}).get(group_key, {})
+                corr = group_data.get(prop_pair, np.nan)
+                
+                correlations.append(corr)
             
-            # Plot the average correlation over A for this p+q group
+            label = f"{'p+q' if group_type == 'p_plus_q' else 'p-q'}={group_key}"
+            fmt = 'o-' if group_type == 'p_plus_q' else 's--'
+        
             plt.plot(
-                A_values,
-                correlation_coeffs,
-                'o-', 
-                color=color_map_sum(idx % color_map_sum.N),
-                label=f'p+q={pq_sum}'
+                A_values, 
+                correlations, 
+                fmt, 
+                color=color_map(idx % color_map.N),
+                label=label
             )
-        
+
         plt.xlabel('Perturbation Amplitude A', fontsize=14)
-        plt.ylabel('Pearson Correlation Coefficient', fontsize=14)
-        plt.title(f'Correlation between {prop_x} and {prop_y} vs Perturbation Amplitude A (Grouped by p+q)', fontsize=16)
-        plt.grid(True)
-        plt.legend(title='p + q', fontsize=10, title_fontsize=12, bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        
-        # Save the correlation plot for p+q
-        filename_corr_sum = os.path.join(
-            correlation_subfolder_path, 
-            f"Correlation_{prop_x}_vs_{prop_y}_grouped_by_p+q.png"
+        plt.ylabel('Correlation Coefficient', fontsize=14)
+        prop_pair_str = ' & '.join([p.replace('_', ' ').title() for p in prop_pair])
+        plt.title(
+            f'Correlation: {prop_pair_str} vs Perturbation Amplitude A (Grouped by {"p+q" if group_type == "p_plus_q" else "p-q"})',
+            fontsize=16
         )
-        plt.savefig(filename_corr_sum, dpi=300)
-        plt.close()
-        
-        # --- Plot Correlations Grouped by p-q ---
-        plt.figure(figsize=(12, 8))
-        legend_handles_diff = []
-        for idx, (pq_diff, pairs) in enumerate(sorted(pq_groups['p_minus_q'].items())):
-            correlation_coeffs = []
-            for A in A_values:
-                corr_values = []
-                for (p, q) in pairs:
-                    corr_matrix = correlations_over_A.get(A, {}).get((p, q), {})
-                    corr = corr_matrix.get(prop_x, {}).get(prop_y, np.nan)
-                    if not np.isnan(corr):
-                        corr_values.append(corr)
-                # Compute average correlation for this group and A
-                if corr_values:
-                    avg_corr = np.nanmean(corr_values)
-                else:
-                    avg_corr = np.nan
-                correlation_coeffs.append(avg_corr)
-            
-            # Plot the average correlation over A for this p-q group
-            plt.plot(
-                A_values,
-                correlation_coeffs,
-                's--', 
-                color=color_map_diff(idx % color_map_diff.N),
-                label=f'p-q={pq_diff}'
-            )
-        
-        plt.xlabel('Perturbation Amplitude A', fontsize=14)
-        plt.ylabel('Pearson Correlation Coefficient', fontsize=14)
-        plt.title(f'Correlation between {prop_x} and {prop_y} vs Perturbation Amplitude A (Grouped by p-q)', fontsize=16)
         plt.grid(True)
-        plt.legend(title='p - q', fontsize=10, title_fontsize=12, bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        
-        # Save the correlation plot for p-q
-        filename_corr_diff = os.path.join(
-            correlation_subfolder_path, 
-            f"Correlation_{prop_x}_vs_{prop_y}_grouped_by_p-q.png"
+        plt.legend(
+            title='Group',
+            fontsize=10, 
+            title_fontsize=12, 
+            bbox_to_anchor=(1.05, 1), 
+            loc='upper left'
         )
-        plt.savefig(filename_corr_diff, dpi=300)
+        plt.tight_layout()
+
+        # Create a safe filename by replacing spaces with underscores and removing special characters
+        prop_pair_filename = '_'.join([p.replace(' ', '').replace('_', '') for p in prop_pair])
+        filename = os.path.join(
+            subfolder_path, 
+            f"Correlation_vs_A_{prop_pair_filename}_grouped_by_{'p+q' if group_type == 'p_plus_q' else 'p-q'}.png"
+        )
+        plt.savefig(filename, dpi=300)
         plt.close()
+
+    # Iterate over each property pair and plot correlations
+    for prop_pair in property_pairs:
+        # Plot for 'p_plus_q'
+        if pq_groups['p_plus_q']:
+            plot_correlation(prop_pair, 'p_plus_q')
+        
+        # Plot for 'p_minus_q'
+        if pq_groups['p_minus_q']:
+            plot_correlation(prop_pair, 'p_minus_q')
+
+    print(f"Correlation plots have been generated and saved in the '{subfolder}' subdirectory.")
+
+
