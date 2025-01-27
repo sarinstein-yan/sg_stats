@@ -280,34 +280,35 @@ def compute_graph_properties_for_pairs(
     if return_correlation:
         correlation_dict = {pair: {} for pair in irreducible_pairs}
 
-    # Iterate over irreducible pairs
-    for (p, q) in irreducible_pairs:
-        # Generate N samples (with or without perturbations)
-        poly_samples = generate_polynomial(
-            q, p,
-            random_perturbations=perturb,
-            distribution=distribution,
-            mu=mu,
-            sigma=sigma,
-            sample=N
-        )
+    # with mp.Pool(num_workers) as pool: # multi-processing (thread safe)
+    with mp.dummy.Pool(num_workers) as pool:
+        # Iterate over irreducible pairs
+        for (p, q) in irreducible_pairs:
+            # Generate N samples (with or without perturbations)
+            poly_samples = generate_polynomial(
+                q, p,
+                random_perturbations=perturb,
+                distribution=distribution,
+                mu=mu,
+                sigma=sigma,
+                sample=N
+            )
 
-        # Build argument list for multiprocessing
-        # Each entry is a tuple containing all the arguments needed by 'process_single_sample'
-        argument_list = [
-            (i, c, p, q, properties, plot_nancases)
-            for i, c in enumerate(poly_samples)
-        ]
+            # Build argument list for multi-threading
+            # Each entry is a tuple containing all the arguments needed by 'process_single_sample'
+            argument_list = [
+                (i, c, p, q, properties, plot_nancases)
+                for i, c in enumerate(poly_samples)
+            ]
 
-        # Thread parallelism
-        with mp.dummy.Pool(num_workers) as pool:
+            # Thread parallelism
             results = pool.map(process_single_sample, argument_list)
 
-        # 'results' is a list of (i, props) tuples, in the same order as argument_list
-        # Store these in the main dictionary
-        for i, props in results:
-            for prop in properties:
-                graph_properties_dict[(p, q)][prop].append(props.get(prop, np.nan))
+            # 'results' is a list of (i, props) tuples, in the same order as argument_list
+            # Store these in the main dictionary
+            for i, props in results:
+                for prop in properties:
+                    graph_properties_dict[(p, q)][prop].append(props.get(prop, np.nan))
 
     # Compute correlations if requested
     if return_correlation:
@@ -319,9 +320,7 @@ def compute_graph_properties_for_pairs(
             corr_matrix = df.corr()
             # Convert the correlation matrix to a nested dictionary
             correlation_dict[pair] = corr_matrix.to_dict()
-
         return graph_properties_dict, correlation_dict
-
     else:
         return graph_properties_dict
 
