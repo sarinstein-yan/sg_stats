@@ -1,587 +1,570 @@
 import poly2graph as p2g
-print(f'poly2graph version: {p2g.__version__}')
-import math
-import os
+import math, os, pickle
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
-from collections import defaultdict
-import seaborn as sns
 import pandas as pd
-from itertools import combinations
 import multiprocessing as mp
+from .plot import plot_properties_vs_A_separate, plot_correlations_vs_A_separate
+import warnings
 
 
 
-def generate_polynomial(q, p, random_perturbations=False, distribution='gaussian', mu=0, sigma=1, sample=100):
-    """
-    Generates a symmetric coefficient list for the polynomial H(z) = z^p + z^-q.
-    If random_perturbations is True, it adds random coefficients for powers from
-    (1-q) to (p-1).
-
-    Distribution options:
-    - 'gaussian': Gaussian distribution (use mu and sigma as mean and std)
-    - 'uniform': Uniform distribution (mu and sigma define the lower and upper bounds)
-    - Callable: A function or lambda that returns a random sample when called.
-
-    If sample > 1, multiple samples of random perturbations are generated, resulting
-    in multiple polynomial realizations. In this case, a 2D array is returned
-    with shape (sample, size), where each row is one realization.
-
-    Args:
-    - q (int): Power of the term z^-q
-    - p (int): Power of the term z^p
-    - random_perturbations (bool): Whether to add random coefficients in between leading monomials
-    - distribution (str or callable): Distribution type ('gaussian', 'uniform') or a callable returning random values.
-    - mu (float): Parameter for the chosen distribution. For gaussian (mean), for uniform (lower bound).
-    - sigma (float): Parameter for the chosen distribution. For gaussian (std), for uniform (upper bound).
-    - sample (int): Number of random samples to generate if random_perturbations=True (default: 100)
-
-    Returns:
-    - np.array: 
-        If sample=1 or random_perturbations=False, returns a 2D numpy array of shape (1, size).
-        If sample>1 and random_perturbations=True, returns a 2D numpy array of shape (sample, size).
-    """
-    max_power = max(p, q)
-    size = 2 * max_power + 1  # symmetric list length
-
-    # Define a function to draw a random sample from the chosen distribution
-    def draw_sample():
-        if callable(distribution):
-            return distribution()
-        elif distribution == 'gaussian':
-            return np.random.normal(mu, sigma)
-        elif distribution == 'uniform':
-            return np.random.uniform(mu, sigma)
-        else:
-            raise ValueError(f"Unsupported distribution type: {distribution}. Must be 'gaussian', 'uniform', or a Callable.")
-
-    def generate_one():
-        # Initialize the coefficient list with zeros
-        coeffs = np.zeros(size, dtype=float)
-        # Set the leading terms
-        coeffs[max_power + p] = 1.0   # z^p
-        coeffs[max_power - q] = 1.0   # z^-q
-
-        #TODO: Parallelize the loop
-        if random_perturbations:
-            for r in range(1 - q, p):
-                idx = r + max_power
-                # Avoid overwriting the main terms
-                if r != p and r != -q:
-                    coeffs[idx] += draw_sample()
-        return coeffs
-
-    if random_perturbations and sample > 1:
-        # Generate multiple polynomial realizations
-        coeff_samples = [generate_one() for _ in range(sample)]
-        return np.array(coeff_samples)
-    else:
-        # Generate a single polynomial and wrap it in a list to form a 2D array
-        return np.array([generate_one()])
-
-
-def get_irreducible_pairs(p_range, q_range):
-    """Generate a list of irreducible (p, q) pairs where gcd(p, q) == 1."""
-    return [(p, q) for p in p_range for q in q_range if math.gcd(p, q) == 1 and p != q]
-
-
-def convert_to_simple_graph(sg):
-    """Convert a MultiGraph or MultiDiGraph to a simple Graph."""
-    if isinstance(sg, (nx.MultiGraph, nx.MultiDiGraph)):
-        G = nx.Graph()
-        G.add_nodes_from(sg.nodes(data=True))
-        G.add_edges_from(sg.edges(data=True))
-    else:
-        G = sg
-    return G
-
-
-
-def compute_graph_properties(G, properties):
-    """
-    Compute specified graph properties.
-
-    Parameters:
-        G (networkx.Graph): The graph for which properties are computed.
-        properties (list): List of properties to compute.
-
-    Returns:
-        dict: Dictionary of computed properties.
-    """
-    props = {}
-
-    # Basic properties
-    if "number_of_nodes" in properties:
-        props["number_of_nodes"] = G.number_of_nodes() - 1  # Adjusting as per original code
-
-    if "number_of_edges" in properties:
-        props["number_of_edges"] = G.number_of_edges()
-
-    if "average_degree" in properties:
-        num_nodes = G.number_of_nodes() - 1
-        num_edges = G.number_of_edges()
-        props["average_degree"] = (2 * num_edges / num_nodes) if num_nodes > 0 else np.nan
-
-    if "degree_assortativity" in properties:
-        num_edges = G.number_of_edges()
-        props["degree_assortativity"] = nx.degree_assortativity_coefficient(G) if num_edges > 0 else np.nan
-
-    # Properties requiring connectedness
-    connected_properties = ["average_shortest_path_length", "diameter", "radius", "eccentricities"]
-    need_connected = any(prop in properties for prop in connected_properties)
-
-    is_connected = G.number_of_nodes() > 1 and nx.is_connected(G) if need_connected else False
-
-    if need_connected and is_connected:
-        try:
-            if "average_shortest_path_length" in properties:
-                props["average_shortest_path_length"] = nx.average_shortest_path_length(G)
-
-            if "diameter" in properties:
-                props["diameter"] = nx.diameter(G)
-
-            if "radius" in properties or "eccentricities" in properties:
-                ecc = nx.eccentricity(G)
-                if "eccentricities" in properties:
-                    props["eccentricities"] = list(ecc.values())
-                if "radius" in properties:
-                    props["radius"] = min(ecc.values()) if ecc else np.nan
-
-        except nx.NetworkXError:
-            for prop in connected_properties:
-                if prop in properties:
-                    props[prop] = np.nan
-    else:
-        for prop in connected_properties:
-            if prop in properties:
-                props[prop] = np.nan
-
-    # Efficiencies
-    if "global_efficiency" in properties:
-        try:
-            props["global_efficiency"] = nx.global_efficiency(G)
-        except:
-            props["global_efficiency"] = np.nan
-
-    if "local_efficiency" in properties:
-        try:
-            props["local_efficiency"] = nx.local_efficiency(G)
-        except:
-            props["local_efficiency"] = np.nan
-
-    # Average Clustering
-    if "average_clustering" in properties: # NA on multigraph
-        try:
-            num_nodes = G.number_of_nodes() - 1
-            props["average_clustering"] = nx.average_clustering(G) if num_nodes > 1 else np.nan
-        except:
-            props["triangle_count"] = np.nan
-    
-    # Triad Census
-    if "triad_census" in properties: # NA on multigraph
-        DG = G.copy().to_directed()
-        try:
-            props["triad_census"] = nx.triadic_census(DG)
-        except:
-            props["triad_census"] = None
-
-    # Triangle Count
-    if "triangle_count" in properties:
-        try:
-            tri_per_node = nx.triangles(G)
-            props["triangle_count"] = sum(tri_per_node.values()) / 3
-        except:
-            props["triangle_count"] = np.nan
-
-    return props
-
-
-def process_single_sample(args):
-    """
-    Worker function to handle a single polynomial sample.
-    
-    Parameters:
-        args (tuple): Contains all arguments needed for computation.
-            - i (int) : Index of the sample.
-            - c (list or np.array) : Polynomial coefficients for this sample.
-            - p (int) : p-value from the irreducible (p, q) pair.
-            - q (int) : q-value from the irreducible (p, q) pair.
-            - properties (list): List of properties to compute.
-            - plot_nancases (bool): Whether or not to plot graphs with NaN properties.
-
-    Returns:
-        (i, dict): The index of the sample and the dictionary of computed properties.
-    """
-    i, c, p, q, properties, plot_nancases = args
-    
-    # Compute E_maxes and the spectral graph
-    E_maxes = p2g.auto_Emaxes(c)
-    sg = p2g.spectral_graph(
-        c, E_max=E_maxes, 
-        E_len=256, E_splits=4,
-        s2g_kwargs={'add_pts': False}
-    )
-    # G = sg
-    G = convert_to_simple_graph(sg)
-    props = compute_graph_properties(G, properties)
-
-    # Optionally handle NaN cases, but be aware that plotting from multiple processes
-    # can sometimes cause race conditions or performance issues. Usually, you might
-    # want to do plotting in the parent process if possible. 
-    if plot_nancases:
-        scalar_props = {k: v for k, v in props.items() if isinstance(v, float)}
-        nan_props = [k for k, v in scalar_props.items() if np.isnan(v)]
-        if nan_props:
-            print(f"NaN encountered for (p,q)=({p},{q}) at sample {i}. NaN in: {nan_props}")
-            plt.figure(figsize=(6, 4))
-            pos = nx.spring_layout(G, seed=42)
-            nx.draw(G, pos=pos, with_labels=True, node_size=500, node_color="lightblue", edge_color="gray")
-            plt.title(f"(p,q)=({p},{q}), Sample={i}, NaN in: {nan_props}")
-            # plt.show()
-
-    return i, props
-
-def compute_graph_properties_for_pairs(
-        irreducible_pairs, N, 
-        perturb=True, 
-        distribution='gaussian',
-        mu=0, sigma=1, 
-        properties=None, 
-        num_workers=None,
-        plot_nancases=False,
-        return_correlation=False
-    ):
-    """
-    Generate graph properties for each irreducible (p, q) pair.
-    Now parallelized using multiprocessing.
-    """
-    if properties is None:
-        properties = [
-            "number_of_nodes",
-            "number_of_edges",
-            "average_degree",
-            "degree_assortativity",
-            "average_shortest_path_length",
-            "diameter",
-            "radius",
-            "eccentricities",
-            "global_efficiency",
-            "local_efficiency",
-            "average_clustering",
-            "triad_census",
-            "triangle_count"
-        ]
-
-    # Initialize the main dictionary
-    graph_properties_dict = {pair: {prop: [] for prop in properties} for pair in irreducible_pairs}
-
-    # Optionally initialize the correlation dictionary
-    if return_correlation:
-        correlation_dict = {pair: {} for pair in irreducible_pairs}
-
-    # with mp.Pool(num_workers) as pool: # multi-processing (thread safe)
-    with mp.dummy.Pool(num_workers) as pool:
-        # Iterate over irreducible pairs
-        for (p, q) in irreducible_pairs:
-            # Generate N samples (with or without perturbations)
-            poly_samples = generate_polynomial(
-                q, p,
-                random_perturbations=perturb,
-                distribution=distribution,
-                mu=mu,
-                sigma=sigma,
-                sample=N
-            )
-
-            # Build argument list for multi-threading
-            # Each entry is a tuple containing all the arguments needed by 'process_single_sample'
-            argument_list = [
-                (i, c, p, q, properties, plot_nancases)
-                for i, c in enumerate(poly_samples)
-            ]
-
-            # Thread parallelism
-            results = pool.map(process_single_sample, argument_list)
-
-            # 'results' is a list of (i, props) tuples, in the same order as argument_list
-            # Store these in the main dictionary
-            for i, props in results:
-                for prop in properties:
-                    graph_properties_dict[(p, q)][prop].append(props.get(prop, np.nan))
-
-    # Compute correlations if requested
-    if return_correlation:
-        for pair in irreducible_pairs:
-            df = pd.DataFrame(graph_properties_dict[pair])
-            # Drop columns with all NaNs to avoid errors
-            df = df.dropna(axis=1, how='all')
-            # Compute the correlation matrix
-            corr_matrix = df.corr()
-            # Convert the correlation matrix to a nested dictionary
-            correlation_dict[pair] = corr_matrix.to_dict()
-        return graph_properties_dict, correlation_dict
-    else:
-        return graph_properties_dict
-
-
-def compute_statistics(graph_properties_dict, properties):
-    """
-    Compute mean and standard deviation for each property, ignoring NaNs.
-
-    Parameters:
-        graph_properties_dict (dict): Nested dictionary with properties.
-        properties (list): List of properties to compute statistics for.
-
-    Returns:
-        dict: Nested dictionary with mean and std for each (p, q) pair and property.
-    """
-    mean_std_dict = {}
-    for (p, q), props in graph_properties_dict.items():
-        mean_std_dict[(p, q)] = {}
-        for prop in properties:
-            values = props[prop]
-            if values:
-                mean_std_dict[(p, q)][prop] = {
-                    "mean": np.nanmean(values),
-                    "std": np.nanstd(values)
-                }
-            else:
-                mean_std_dict[(p, q)][prop] = {
-                    "mean": np.nan,
-                    "std": np.nan
-                }
-    return mean_std_dict
-
-
-
-def group_statistics_by_pq(mean_std_dict, properties):
-    """
-    Aggregate statistics by grouping (p, q) pairs based on p+q and p-q.
-
-    Parameters:
-        mean_std_dict (dict): Nested dictionary with (p, q) as keys and property stats as values.
-                              Example:
-                              {
-                                  (1, 2): {'property1': {'mean': 0.5, 'std': 0.1}, ...},
-                                  (2, 3): {'property1': {'mean': 0.6, 'std': 0.2}, ...},
-                                  ...
-                              }
-        properties (list): List of properties to group and aggregate.
-
-    Returns:
-        dict: Aggregated statistics grouped by 'p_plus_q' and 'p_minus_q'.
-              Structure:
-              {
-                  'p_plus_q': {
-                      3: {'property1': {'mean': aggregated_mean, 'std': aggregated_std}, ...},
-                      5: {...},
-                      ...
-                  },
-                  'p_minus_q': {
-                      -1: {'property1': {'mean': aggregated_mean, 'std': aggregated_std}, ...},
-                      1: {...},
-                      ...
-                  }
-              }
-    """
-    grouped_stats = defaultdict(lambda: defaultdict(dict))
-    for (p, q), props in mean_std_dict.items():
-        p_plus_q = p + q
-        p_minus_q = p - q
-        for prop in properties:
-            if prop in props:
-                # Aggregate for p+q
-                group_pq = grouped_stats['p_plus_q'][p_plus_q].setdefault(prop, {'sum_mean': 0.0, 'sum_std': 0.0, 'count': 0})
-                group_pq['sum_mean'] += props[prop]['mean']
-                group_pq['sum_std'] += props[prop]['std']
-                group_pq['count'] += 1
-
-                # Aggregate for p-q
-                group_pq_diff = grouped_stats['p_minus_q'][p_minus_q].setdefault(prop, {'sum_mean': 0.0, 'sum_std': 0.0, 'count': 0})
-                group_pq_diff['sum_mean'] += props[prop]['mean']
-                group_pq_diff['sum_std'] += props[prop]['std']**2 # Using the average std of n indep random variables formula 
-                # i.e sqrt(sigma_1^2+sigma_2^2+sigma_3^2+sigma_5^2+...sigma_n^2)=average_sigma
-                group_pq_diff['count'] += 1
- 
-    # Compute overall mean and std for grouped statistics incrementally
-    for group in ['p_plus_q', 'p_minus_q']:
-        for key in grouped_stats[group]:
-            for prop in properties:
-                if prop in grouped_stats[group][key]:
-                    sum_mean = grouped_stats[group][key][prop]['sum_mean']
-                    sum_std = grouped_stats[group][key][prop]['sum_std']
-                    count = grouped_stats[group][key][prop]['count']
-                    grouped_stats[group][key][prop] = {
-                        'mean': sum_mean / count if count > 0 else np.nan,
-                        'std': np.sqrt(sum_std) / count if count > 0 else np.nan  #  sqrt(sigma_1^2+sigma_2^2+sigma_3^2+sigma_5^2+...sigma_n^2)=average_sigma
-                    }
-    
-    return grouped_stats
- 
- 
-
-
-def compute_avg_correlations_grouped(correlation_dict, properties):
-    """
-    Compute average Pearson correlation coefficients for each (p + q) and (p - q) group using a counting method.
-    
-    Parameters:
-        correlation_dict (dict): Correlation data for a specific A.
-                                 Structure: { (p, q): {prop_x: {prop_y: corr, ...}, ...}, ...}
-        properties (list): List of properties to consider for correlation.
-    
-    Returns:
-        dict: Average correlations grouped by 'p_plus_q' and 'p_minus_q'.
-              Structure:
-              {
-                  'p_plus_q': {
-                      group_key: { (prop_x, prop_y): avg_corr, ... },
-                      ...
-                  },
-                  'p_minus_q': {
-                      group_key: { (prop_x, prop_y): avg_corr, ... },
-                      ...
-                  }
-              }
-    """
-    # Initialize dictionaries to accumulate sum and count for correlations
-    sum_correlations = {
-        'p_plus_q': defaultdict(lambda: defaultdict(float)),
-        'p_minus_q': defaultdict(lambda: defaultdict(float))
-    }
-    count_correlations = {
-        'p_plus_q': defaultdict(lambda: defaultdict(int)),
-        'p_minus_q': defaultdict(lambda: defaultdict(int))
-    }
-    
-    # Iterate over each (p, q) pair and its correlation matrix
-    for (p, q), prop_corr in correlation_dict.items():
-        p_plus_q = p + q
-        p_minus_q = p - q
-
-        # Iterate over each unique property pair to collect correlations
-        for i in range(len(properties)):
-            for j in range(i + 1, len(properties)):
-                prop_x = properties[i]
-                prop_y = properties[j]
-                corr = prop_corr.get(prop_x, {}).get(prop_y, np.nan)
-                if not np.isnan(corr):
-                    pair = (prop_x, prop_y)
-                    # Accumulate sum and count for p+q
-                    sum_correlations['p_plus_q'][p_plus_q][pair] += corr
-                    count_correlations['p_plus_q'][p_plus_q][pair] += 1
-                    # Accumulate sum and count for p-q
-                    sum_correlations['p_minus_q'][p_minus_q][pair] += corr
-                    count_correlations['p_minus_q'][p_minus_q][pair] += 1
-    
-    # Compute the average correlation for each group and property pair
-    final_avg_correlations = {
-        'p_plus_q': defaultdict(dict),
-        'p_minus_q': defaultdict(dict)
-    }
-
-    for group_type in ['p_plus_q', 'p_minus_q']:
-        for group_key in sum_correlations[group_type]:
-            for pair in sum_correlations[group_type][group_key]:
-                total_corr = sum_correlations[group_type][group_key][pair]
-                total_count = count_correlations[group_type][group_key][pair]
-                avg_corr = total_corr / total_count if total_count > 0 else np.nan
-                final_avg_correlations[group_type][group_key][pair] = avg_corr
-
-    return final_avg_correlations
- 
-
- 
-def main_workflow_mpc(p_values, q_values, A_min, A_max, num_A, N, properties, 
-                  num_workers=None, output_folder='plots_A_analysis', plot_nancases=False):
-    """
-    Execute the workflow to generate graph properties, compute statistics, and plot results.
-
-    Parameters:
-        p_values (iterable): Range of p values.
-        q_values (iterable): Range of q values.
-        A_min (float): Minimum value of A (should include 0 for the base case).
-        A_max (float): Maximum value of A.
-        num_A (int): Number of A samples.
-        N (int): Number of samples per (p, q) pair and A.
-        properties (list): List of properties to compute and plot.
-        num_workers (int): Number of parallel workers for multiprocessing.
-        output_folder (str): Directory to save the plots.
-        plot_nancases (bool): Whether to plot graphs with NaN properties.
-    """
-    # Step 1: Generate irreducible (p, q) pairs
-    irreducible_pairs = get_irreducible_pairs(p_values, q_values)
-    print(f"Total irreducible (p, q) pairs: {len(irreducible_pairs)}")
-
-    # Step 2: Define range of A values (including A=0 for the base case)
-    A_values = np.linspace(A_min, A_max, num_A)
-    print(f"A values: {A_values}")
-
-    # Initialize a dictionary to store aggregated stats over A
-    aggregated_stats_over_A = {A: {'p_plus_q': defaultdict(dict), 'p_minus_q': defaultdict(dict)} for A in A_values}
-
-    # Step 3: Iterate over A and compute properties
-    correlations_over_A={}
-    for A in A_values:
-        print(f"Processing A = {A:.2f}")
-        
-        if A == 0:
-            # Base case: No perturbations, single sample
-            current_N = 1
-            current_perturb = False
-            current_sigma = 1  # Sigma is irrelevant when perturb=False
-        else:
-            # Perturbed cases
-            current_N = N
-            current_perturb = True
-            current_sigma = A  # Sigma scales with A
-
-   
-
-        graph_properties_dict,correlations = compute_graph_properties_for_pairs(
-            irreducible_pairs=irreducible_pairs,
-            N=current_N,
-            perturb=current_perturb,
+class StatsAnalyzer:
+    def __init__(self, 
+            p_values, q_values, A_values,
+            N, properties, 
+            num_workers=None,
             distribution='gaussian',
             mu=0,
-            sigma=current_sigma,
-            properties=properties,
-            num_workers=num_workers,
-            plot_nancases=plot_nancases, return_correlation=True
+            output_folder=None,
+            plot_nancases=False,
+        ):
+        """
+        Initialize the StatsAnalyzer.
+
+        Parameters:
+            p_values (iterable): p values to consider.
+            q_values (iterable): q values to consider.
+            A_values (iterable): A values to consider.
+            N (int): Number of samples per (p,q, A).
+            properties (list): List of graph properties to compute.
+            num_workers (int): Number of parallel workers (default: None).
+            distribution (str or callable): Random distribution for polynomial perturbations.
+            mu (float): Mean or lower bound for the distribution.
+            output_folder (str): Base folder to save graphs and noncases. If None, saving is disabled.
+            plot_nancases (bool): If True, plot (and save) graphs with NaN properties.
+        """
+        self.p_values = p_values
+        self.q_values = q_values
+        self.A_values = A_values
+        self.N = N
+        self.properties = properties
+        self.num_workers = num_workers
+        self.distribution = distribution
+        self.mu = mu
+        self.output_folder = output_folder
+        self.plot_nancases = plot_nancases
+        self.correlations_over_A = None
+        self.aggregated_stats_over_A = None
+
+        # Create output directories.
+        if self.output_folder is None:
+            self.save_data = False
+        elif isinstance(self.output_folder, str):
+            self.save_data = True
+        else:
+            raise ValueError("output_folder must be a string or None")
+        
+        if self.save_data:
+            self.graphs_folder = os.path.join(self.output_folder, "graphs")
+            os.makedirs(self.graphs_folder, exist_ok=True)
+            self.data_folder = os.path.join(self.output_folder, "data")
+            os.makedirs(self.data_folder, exist_ok=True)
+        if self.plot_nancases:
+            self.noncase_folder = os.path.join(self.output_folder, "noncases")
+            os.makedirs(self.noncase_folder, exist_ok=True)
+            
+
+    def generate_polynomial(self, q, p, random_perturbations, sigma, sample):
+        """
+        Generate a polynomial coefficient vector (or many samples) for h(z)=z^p+z^-q
+        with optional random perturbations between the two main terms.
+        """
+        max_power = max(p, q)
+        size = 2 * max_power + 1
+
+        def draw_sample():
+            if callable(self.distribution):
+                return self.distribution()
+            elif self.distribution == 'gaussian':
+                return np.random.normal(self.mu, sigma)
+            elif self.distribution == 'uniform':
+                return np.random.uniform(self.mu, sigma)
+            else:
+                raise ValueError(f"Unsupported distribution type: {self.distribution}")
+
+        def generate_one():
+            coeffs = np.zeros(size, dtype=float)
+            coeffs[max_power + p] = 1.0  # leading term z^p
+            coeffs[max_power - q] = 1.0  # leading term z^-q
+            if random_perturbations:
+                for r in range(1 - q, p):
+                    if r == p or r == -q:
+                        continue
+                    idx = r + max_power
+                    coeffs[idx] += draw_sample()
+            return coeffs
+
+        if random_perturbations and sample > 1:
+            coeff_samples = [generate_one() for _ in range(sample)]
+            return np.array(coeff_samples)
+        else:
+            return np.array([generate_one()])
+
+    def get_irreducible_pairs(self):
+        """Return a list of (p, q) pairs such that gcd(p, q)==1 and p != q."""
+        return [(p, q) for p in self.p_values
+                for q in self.q_values if math.gcd(p, q) == 1 and p != q]
+
+    def convert_to_simple_graph(self, sg):
+        """Convert a (multi)graph into a simple graph if necessary."""
+        if isinstance(sg, (nx.MultiGraph, nx.MultiDiGraph)):
+            G = nx.Graph()
+            G.add_nodes_from(sg.nodes(data=True))
+            G.add_edges_from(sg.edges(data=True))
+        else:
+            G = sg
+        return G
+
+    def compute_graph_properties(self, G):
+        """
+        Compute the requested graph properties from a given networkx graph.
+        
+        Parameters:
+            G (networkx.Graph or nx.MultiGraph): The graph for which to compute properties.
+            
+        Returns:
+            dict: Computed properties.
+        """
+        props = {}
+
+        if "number_of_nodes" in self.properties:
+            props["number_of_nodes"] = G.number_of_nodes() # removed the -1 offset
+        if "number_of_edges" in self.properties:
+            props["number_of_edges"] = G.number_of_edges()
+        if "average_degree" in self.properties:
+            num_nodes = G.number_of_nodes()
+            num_edges = G.number_of_edges()
+            props["average_degree"] = (2 * num_edges / num_nodes) if num_nodes > 0 else np.nan
+        if "degree_assortativity" in self.properties:
+            num_edges = G.number_of_edges()
+            props["degree_assortativity"] = (nx.degree_assortativity_coefficient(G)
+                                             if num_edges > 0 else np.nan)
+
+        # Properties that require a connected graph.
+        connected_properties = ["average_shortest_path_length", "diameter", "radius", "eccentricities"]
+        need_connected = any(prop in self.properties for prop in connected_properties)
+        is_connected = (G.number_of_nodes() > 1 and nx.is_connected(G)) if need_connected else False
+
+        if need_connected and is_connected:
+            try:
+                if "average_shortest_path_length" in self.properties:
+                    props["average_shortest_path_length"] = nx.average_shortest_path_length(G)
+                if "diameter" in self.properties:
+                    props["diameter"] = nx.diameter(G)
+                if "radius" in self.properties or "eccentricities" in self.properties:
+                    ecc = nx.eccentricity(G)
+                    if "eccentricities" in self.properties:
+                        props["eccentricities"] = list(ecc.values())
+                    if "radius" in self.properties:
+                        props["radius"] = min(ecc.values()) if ecc else np.nan
+            except nx.NetworkXError:
+                for prop in connected_properties:
+                    if prop in self.properties:
+                        props[prop] = np.nan
+        else:
+            for prop in connected_properties:
+                if prop in self.properties:
+                    props[prop] = np.nan
+
+        # Additional properties.
+        if "global_efficiency" in self.properties:
+            try:
+                props["global_efficiency"] = nx.global_efficiency(G)
+            except Exception:
+                props["global_efficiency"] = np.nan
+
+        if "local_efficiency" in self.properties:
+            try:
+                props["local_efficiency"] = nx.local_efficiency(G)
+            except Exception:
+                props["local_efficiency"] = np.nan
+
+        if "average_clustering" in self.properties: # NA on multigraph
+            try:
+                num_nodes = G.number_of_nodes()
+                props["average_clustering"] = nx.average_clustering(G) if num_nodes > 0 else np.nan
+            except Exception:
+                props["average_clustering"] = np.nan
+
+        if "triad_census" in self.properties: # NA on multigraph
+            DG = G.copy().to_directed()
+            try:
+                props["triad_census"] = nx.triadic_census(DG)
+            except Exception:
+                props["triad_census"] = None
+
+        if "triangle_count" in self.properties:
+            try:
+                tri_per_node = nx.triangles(G)
+                props["triangle_count"] = sum(tri_per_node.values()) / 3
+            except Exception:
+                props["triangle_count"] = np.nan
+
+        return props
+
+    def process_single_sample(self, args):
+        """
+        Worker function that processes one polynomial sample.
+        
+        Parameters:
+            args (tuple): (i, coeff, p, q, A)
+            
+        Returns:
+            tuple: (i, coeff, spectral graph object)
+        """
+        i, coeff, p, q, A = args
+        E_maxes = p2g.auto_Emaxes(coeff)
+        sg = p2g.spectral_graph(
+            coeff,
+            E_max=E_maxes,
+            E_len=200,
+            E_splits=4,
+            s2g_kwargs={'add_pts': False} # do not save points on the edges
+        )
+        # sg = self.convert_to_simple_graph(sg)
+        return i, coeff, sg
+
+    def generate_graph(self, irreducible_pairs, N, perturb, sigma, A):
+        """
+        For each (p,q) pair, generate polynomial samples and compute the corresponding spectral graphs.
+        
+        Parameters:
+            irreducible_pairs (list): List of (p,q) pairs.
+            N (int): Number of samples per (p,q) pair.
+            perturb (bool): Whether to add random perturbations.
+            sigma (float): The sigma parameter for the perturbation distribution.
+            A (float): The current A value (for record-keeping).
+            
+        Returns:
+            dict: A dictionary mapping each (p,q) pair to a list of tuples (i, coeff, graph).
+        """
+        graphs_dict = {}
+        # pool = mp.Pool(self.num_workers) # process-based pool
+        pool = mp.dummy.Pool(self.num_workers) # thread-based pool
+        for (p, q) in irreducible_pairs:
+            poly_samples = self.generate_polynomial(q, p,
+                                                    random_perturbations=perturb,
+                                                    sigma=sigma,
+                                                    sample=N)
+            argument_list = [(i, coeff, p, q, A) for i, coeff in enumerate(poly_samples)]
+            results = pool.map(self.process_single_sample, argument_list)
+            graphs_dict[(p, q)] = results  # Each result is a tuple (i, coeff, graph)
+        pool.close()
+        pool.join()
+        return graphs_dict
+
+    def save_graph_partition(self, graphs_batch, filename):
+        """
+        Save a batch of graphs with their corresponding polynomial coefficient lists to disk.
+        
+        Parameters:
+            graphs_batch (dict): Dictionary mapping each (p,q) pair to a list of tuples 
+                                 (i, coeff, graph).
+            filename (str): Full path (including filename) where the batch will be saved.
+        """
+        with open(filename, "wb") as f:
+            pickle.dump(graphs_batch, f)
+        print(f"Saved graph partition to {filename}")
+    
+    def load_graph_partition(self, filename):
+        """
+        Load a batch of graphs with their corresponding polynomial coefficient lists from disk.
+        
+        Parameters:
+            filename (str): Full path (including filename) of the saved partition.
+            
+        Returns:
+            The loaded graphs batch (dict).
+        """
+        with open(filename, "rb") as f:
+            data = pickle.load(f)
+        print(f"Loaded graph partition from {filename}")
+        return data
+    
+    def load_graph_as_per_A(self, A_values=None):
+        """
+        Load graphs with their corresponding polynomial coefficient lists from disk.
+        
+        Parameters:
+            A_values (iterable): The A values for which to load the graph partitions.
+            
+        Returns:
+            dict: A dictionary mapping each A value to the loaded graphs.
+        """
+        loaded_graphs = {}
+        if A_values is None:
+            A_values = self.A_values
+        for A in A_values:
+            partition_filename = os.path.join(self.graphs_folder, f"graphs_A_{A:.3f}.pkl")
+            if os.path.exists(partition_filename):
+                with open(partition_filename, "rb") as f:
+                    loaded_graphs[A] = pickle.load(f)
+                print(f"Loaded graph partition from {partition_filename}")
+            else:
+                print(f"Partition file {partition_filename} does not exist.")
+        return loaded_graphs
+
+    def compute_statistics(self, graph_properties_dict):
+        """
+        Compute the mean and standard deviation for each property over all samples.
+        
+        Parameters:
+            graph_properties_dict (dict): Dictionary mapping each (p,q) pair to property lists.
+            
+        Returns:
+            dict: Nested dictionary with mean and std for each (p,q) pair.
+        """
+        mean_std_dict = {}
+        for (p, q), props in graph_properties_dict.items():
+            mean_std_dict[(p, q)] = {}
+            for prop in self.properties:
+                values = props[prop]
+                if values:
+                    mean_std_dict[(p, q)][prop] = {
+                        "mean": np.nanmean(values),
+                        "std": np.nanstd(values)
+                    }
+                else:
+                    mean_std_dict[(p, q)][prop] = {"mean": np.nan, "std": np.nan}
+        return mean_std_dict
+
+    def group_statistics_by_pq(self, mean_std_dict):
+        """
+        Aggregate statistics by grouping (p,q) pairs according to p+q and p-q.
+        Returns a plain dictionary that can be pickled.
+        """
+        grouped_stats = {'p_plus_q': {}, 'p_minus_q': {}}
+        
+        for (p, q), props in mean_std_dict.items():
+            p_plus_q = p + q
+            p_minus_q = p - q
+            
+            # Ensure the keys exist.
+            if p_plus_q not in grouped_stats['p_plus_q']:
+                grouped_stats['p_plus_q'][p_plus_q] = {}
+            if p_minus_q not in grouped_stats['p_minus_q']:
+                grouped_stats['p_minus_q'][p_minus_q] = {}
+            
+            for prop in self.properties:
+                if prop in props:
+                    # For p+q
+                    if prop not in grouped_stats['p_plus_q'][p_plus_q]:
+                        grouped_stats['p_plus_q'][p_plus_q][prop] = {'sum_mean': 0.0, 'sum_std': 0.0, 'count': 0}
+                    grouped_stats['p_plus_q'][p_plus_q][prop]['sum_mean'] += props[prop]['mean']
+                    grouped_stats['p_plus_q'][p_plus_q][prop]['sum_std'] += props[prop]['std']
+                    grouped_stats['p_plus_q'][p_plus_q][prop]['count'] += 1
+
+                    # For p-q
+                    if prop not in grouped_stats['p_minus_q'][p_minus_q]:
+                        grouped_stats['p_minus_q'][p_minus_q][prop] = {'sum_mean': 0.0, 'sum_std': 0.0, 'count': 0}
+                    grouped_stats['p_minus_q'][p_minus_q][prop]['sum_mean'] += props[prop]['mean']
+                    grouped_stats['p_minus_q'][p_minus_q][prop]['sum_std'] += props[prop]['std'] ** 2
+                    grouped_stats['p_minus_q'][p_minus_q][prop]['count'] += 1
+
+        # Convert the aggregated sums into mean and standard deviation.
+        for group in ['p_plus_q', 'p_minus_q']:
+            for key in grouped_stats[group]:
+                for prop in grouped_stats[group][key]:
+                    data = grouped_stats[group][key][prop]
+                    count = data['count']
+                    mean_val = data['sum_mean'] / count if count > 0 else np.nan
+                    std_val = np.sqrt(data['sum_std']) / count if count > 0 else np.nan
+                    grouped_stats[group][key][prop] = {'mean': mean_val, 'std': std_val}
+        
+        return grouped_stats
+
+    def compute_avg_correlations_grouped(self, correlation_dict):
+        """
+        Compute average Pearson correlation coefficients for each (p+q) and (p-q) group.
+        Returns a plain dictionary that can be pickled.
+        """
+        sum_correlations = {'p_plus_q': {}, 'p_minus_q': {}}
+        count_correlations = {'p_plus_q': {}, 'p_minus_q': {}}
+        
+        for (p, q), prop_corr in correlation_dict.items():
+            p_plus_q = p + q
+            p_minus_q = p - q
+            
+            # Ensure keys exist for each group.
+            if p_plus_q not in sum_correlations['p_plus_q']:
+                sum_correlations['p_plus_q'][p_plus_q] = {}
+                count_correlations['p_plus_q'][p_plus_q] = {}
+            if p_minus_q not in sum_correlations['p_minus_q']:
+                sum_correlations['p_minus_q'][p_minus_q] = {}
+                count_correlations['p_minus_q'][p_minus_q] = {}
+            
+            for i in range(len(self.properties)):
+                for j in range(i + 1, len(self.properties)):
+                    prop_x = self.properties[i]
+                    prop_y = self.properties[j]
+                    corr = prop_corr.get(prop_x, {}).get(prop_y, np.nan)
+                    if not np.isnan(corr):
+                        pair_key = (prop_x, prop_y)
+                        # For p+q
+                        if pair_key not in sum_correlations['p_plus_q'][p_plus_q]:
+                            sum_correlations['p_plus_q'][p_plus_q][pair_key] = 0.0
+                            count_correlations['p_plus_q'][p_plus_q][pair_key] = 0
+                        sum_correlations['p_plus_q'][p_plus_q][pair_key] += corr
+                        count_correlations['p_plus_q'][p_plus_q][pair_key] += 1
+                        
+                        # For p-q
+                        if pair_key not in sum_correlations['p_minus_q'][p_minus_q]:
+                            sum_correlations['p_minus_q'][p_minus_q][pair_key] = 0.0
+                            count_correlations['p_minus_q'][p_minus_q][pair_key] = 0
+                        sum_correlations['p_minus_q'][p_minus_q][pair_key] += corr
+                        count_correlations['p_minus_q'][p_minus_q][pair_key] += 1
+
+        final_avg_correlations = {'p_plus_q': {}, 'p_minus_q': {}}
+        for group_type in ['p_plus_q', 'p_minus_q']:
+            for group_key in sum_correlations[group_type]:
+                final_avg_correlations[group_type][group_key] = {}
+                for pair_key in sum_correlations[group_type][group_key]:
+                    total_corr = sum_correlations[group_type][group_key][pair_key]
+                    total_count = count_correlations[group_type][group_key][pair_key]
+                    avg_corr = total_corr / total_count if total_count > 0 else np.nan
+                    final_avg_correlations[group_type][group_key][pair_key] = avg_corr
+
+        return final_avg_correlations
+
+
+    def run_workflow(self):
+        """
+        Main workflow:
+         - Generate polynomial coefficients.
+         - For each A in A_values:
+             * Generate the batch of spectral graphs.
+             * Save the batch (graphs and corresponding coefficients) to disk.
+             * Compute graph properties for each generated graph.
+             * Aggregate the statistics and correlations.
+         - After processing all A values, save the aggregated statistics and correlations to disk.
+         - Return correlations_over_A, aggregated_stats_over_A, A_values.
+         
+        Returns:
+            tuple: (correlations_over_A, aggregated_stats_over_A, A_values)
+        """
+        irreducible_pairs = self.get_irreducible_pairs()
+        print(f"Total irreducible (p,q) pairs: {len(irreducible_pairs)}")
+        A_values = self.A_values
+        print(f"A values: {A_values}")
+        
+        aggregated_stats_over_A = {}
+        correlations_over_A = {}
+
+        # For each A, generate graphs, save them, compute properties and correlations.
+        for A in A_values:
+            partition_filename = os.path.join(self.graphs_folder, f"graphs_A_{A:.3f}.pkl")
+            if os.path.exists(partition_filename):
+                print(f"Loading graph partition for A = {A:.3f}")
+                graphs_batch = self.load_graph_partition(partition_filename)
+            else:
+                print(f"Processing A = {A:.3f}")
+                if A == 0:
+                    current_N = 1
+                    current_perturb = False
+                    current_sigma = 1  # Base case; sigma is not used.
+                else:
+                    current_N = self.N
+                    current_perturb = True
+                    current_sigma = A
+
+                # Generate the batch of graphs for the current A.
+                graphs_batch = self.generate_graph(irreducible_pairs, current_N, current_perturb, current_sigma, A)
+                
+                # If saving is enabled, save this batch.
+                if self.save_data:
+                    self.save_graph_partition(graphs_batch, partition_filename)
+            
+            # Compute graph properties for each (p,q) pair.
+            graph_properties_dict = {pair: {prop: [] for prop in self.properties} for pair in irreducible_pairs}
+            correlation_dict = {}
+            for pair, samples in graphs_batch.items():
+                props_list = []
+                for i, coeff, G in samples:
+                    props = self.compute_graph_properties(G)
+                    props_list.append(props)
+                    # Append each property value to the corresponding list.
+                    for prop in self.properties:
+                        graph_properties_dict[pair][prop].append(props.get(prop, np.nan))
+                # Compute correlation for this (p,q) pair if there is more than one sample.
+                if len(props_list) > 1:
+                    df = pd.DataFrame(props_list)
+                    df = df.dropna(axis=1, how='all')
+                    corr_matrix = df.corr()
+                    correlation_dict[pair] = corr_matrix.to_dict()
+                else:
+                    correlation_dict[pair] = {}
+            
+            # Compute statistics (mean and std) for the current A.
+            mean_std_dict = self.compute_statistics(graph_properties_dict)
+            aggregated_stats = self.group_statistics_by_pq(mean_std_dict)
+            aggregated_stats_over_A[A] = aggregated_stats
+
+            # Compute aggregated correlations.
+            aggregated_correlations = self.compute_avg_correlations_grouped(correlation_dict)
+            correlations_over_A[A] = aggregated_correlations
+
+        # After processing all A values, save the aggregated data if enabled.
+        if self.save_data:
+            stats_filename = os.path.join(self.data_folder, "aggregated_stats_over_A.pkl")
+            corr_filename = os.path.join(self.data_folder, "correlations_over_A.pkl")
+            with open(stats_filename, "wb") as f:
+                pickle.dump(aggregated_stats_over_A, f)
+            print(f"Saved aggregated statistics to {stats_filename}")
+            with open(corr_filename, "wb") as f:
+                pickle.dump(correlations_over_A, f)
+            print(f"Saved correlations data to {corr_filename}")
+
+        self.correlations_over_A = correlations_over_A
+        self.aggregated_stats_over_A = aggregated_stats_over_A
+        return correlations_over_A, aggregated_stats_over_A, A_values
+
+    def plot_properties_vs_A(self, with_error_bars=True):
+        """
+        Plot each property against A separately, saving plots with or without error bars
+        in corresponding subdirectories.
+
+        Parameters:
+            with_error_bars (bool): 
+                - If True, plots include error bars and are saved in 'STD_MEAN'.
+                - If False, plots show only mean values and are saved in 'ONLY_MEAN'.
+        """
+        plot_properties_vs_A_separate(
+            self.aggregated_stats_over_A,
+            self.A_values,
+            self.properties,
+            os.path.join(self.output_folder, "plots"),
+            with_error_bars
         )
 
-        # Compute statistics (mean and std) for each (p, q)
-        mean_std_dict = compute_statistics(graph_properties_dict, properties)
-
-        # Group statistics by p + q and p - q
-        aggregated_stats = group_statistics_by_pq(mean_std_dict, properties)
-
-        # Store aggregated stats for this A
-        aggregated_stats_over_A[A] = aggregated_stats
-
-        # Group correlations by p + q and p - q
-        aggregated_correlations = compute_avg_correlations_grouped(correlations, properties)
-        # Store aggregated correlations for this A
-        correlations_over_A[A] = aggregated_correlations
-
-    return correlations_over_A,aggregated_stats_over_A,A_values,output_folder
-     
-
-
-
+    def plot_correlations_vs_A(self):
+        """
+        Plot correlation coefficients between property pairs against perturbation amplitude A,
+        grouped by 'p_plus_q' and 'p_minus_q', and save the plots in the specified output folder.
+        """
+        plot_correlations_vs_A_separate(
+            self.correlations_over_A,
+            self.A_values,
+            self.properties,
+            os.path.join(self.output_folder, "plots")
+        )
 
 
 if __name__ == "__main__":
+    # Example usage:
+    import warnings
+    warnings.filterwarnings("ignore")
+    print(f'\npoly2graph version: {p2g.__version__}\n')
 
-    # Define your parameters
-    p_values = range(5,8)      # Example: p from 1 to 1 (adjust as needed)
-    q_values = range(5,8)      # Example: q from 1 to 1 (adjust as needed)
-    A_min = 0.01                # Minimum A value
+    # Define parameters.
+    p_values = range(5, 8)         # For example, p = 5, 6, 7
+    q_values = range(5, 8)         # For example, q = 5, 6, 7
+    A_min = 0.01                 # Minimum A value
     A_max = 1.5                  # Maximum A value
-    num_A = 15             # Number of A samples
-    N = int(25)                  # Number of samples per (p, q) pair and A
-    num_workers = None              # Number of parallel workers
+    num_A = 4#60                   # Number of A samples
+    N = 20#50                       # Number of samples per (p,q) pair and A
+    num_workers = None           # Use default parallelism
     properties = [
         "number_of_nodes",
         "number_of_edges",
@@ -597,19 +580,29 @@ if __name__ == "__main__":
         # "triad_census",
         "triangle_count"
     ]
-    output_folder = 'plots_A_analysis'
-    plot_nancases = False  # Set to True if you want to plot NaN cases
+    output_folder = "plots_A_analysis"
+    plot_nancases = False         # Whether to plot graphs with NaN properties
+    save_graphs = True            # Set to True to save each generated graph as an image
 
-    # Execute the workflow
-    correlations_over_A,aggregated_stats_over_A,A_values,output_folder= main_workflow_mpc(
-        p_values=p_values,
-        q_values=q_values,
-        A_min=A_min,
-        A_max=A_max,
-        num_A=num_A,
-        N=N,
-        num_workers=num_workers,
-        properties=properties,
-        output_folder=output_folder,
-        plot_nancases=plot_nancases
-    )
+    # Instantiate and run the analyzer.
+    A_values = np.linspace(A_min, A_max, num_A)
+    analyzer = StatsAnalyzer(p_values=p_values,
+                             q_values=q_values,
+                             A_values=A_values,
+                             N=N,
+                             properties=properties,
+                             num_workers=num_workers,
+                             distribution='gaussian',
+                             mu=0,
+                             output_folder=output_folder,
+                             plot_nancases=plot_nancases)
+
+    correlations_over_A, aggregated_stats_over_A, A_values = analyzer.run_workflow()
+
+    print("Plotting properties with error bars (STD_MEAN)...")
+    analyzer.plot_properties_vs_A(with_error_bars=True)
+    print("Plotting properties with only mean values (ONLY_MEAN)...")
+    analyzer.plot_properties_vs_A(with_error_bars=False)
+    print("Plotting correlations between properties over A...")
+    analyzer.plot_correlations_vs_A()
+    print("All plots, including correlation plots, have been generated and saved.")

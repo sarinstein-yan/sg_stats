@@ -1,10 +1,7 @@
-import poly2graph as p2g
 import os
 import numpy as np
-import networkx as nx
 import matplotlib.pyplot as plt
 from itertools import combinations
-from collections import defaultdict
 
 
 def plot_properties_vs_A_separate(aggregated_stats_over_A, A_values, properties, output_folder, with_error_bars=True):
@@ -133,7 +130,7 @@ def plot_properties_vs_A_separate(aggregated_stats_over_A, A_values, properties,
         plt.close()
 
     print(f"{'STD_MEAN' if with_error_bars else 'ONLY_MEAN'} plots have been generated and saved in the '{subfolder}' subdirectory.")
- 
+
 
 def plot_correlations_vs_A_separate(
     aggregated_correlations, 
@@ -257,5 +254,3 @@ def plot_correlations_vs_A_separate(
             plot_correlation(prop_pair, 'p_minus_q')
 
     print(f"Correlation plots have been generated and saved in the '{subfolder}' subdirectory.")
-
-
