@@ -551,10 +551,10 @@ class StatsAnalyzer:
         )
 
 
+import warnings
+warnings.filterwarnings("ignore")
 if __name__ == "__main__":
     # Example usage:
-    import warnings
-    warnings.filterwarnings("ignore")
     print(f'\npoly2graph version: {p2g.__version__}\n')
 
     # Define parameters.

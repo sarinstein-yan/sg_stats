@@ -38,8 +38,8 @@ def plot_properties_vs_A_separate(aggregated_stats_over_A, A_values, properties,
     pq_diffs = sorted(pq_diffs)
 
     # Define color maps
-    color_map_sum = plt.get_cmap('tab10')
-    color_map_diff = plt.get_cmap('tab20')
+    color_map_sum = plt.get_cmap('Dark2')
+    color_map_diff = plt.get_cmap('tab10')
 
     for prop in properties:
         # Plot for p + q
@@ -59,7 +59,9 @@ def plot_properties_vs_A_separate(aggregated_stats_over_A, A_values, properties,
                     fmt='o-', 
                     color=color_map_sum(idx % color_map_sum.N),
                     label=f'p+q={pq_sum}', 
-                    capsize=5
+                    capsize=5,
+                    alpha=0.7,
+                    markersize=3
                 )
             else:
                 plt.plot(
@@ -67,7 +69,9 @@ def plot_properties_vs_A_separate(aggregated_stats_over_A, A_values, properties,
                     means, 
                     'o-', 
                     color=color_map_sum(idx % color_map_sum.N),
-                    label=f'p+q={pq_sum}'
+                    label=f'p+q={pq_sum}',
+                    alpha=0.7,
+                    markersize=3
                 )
 
         plt.xlabel('Perturbation Amplitude A', fontsize=14)
@@ -100,18 +104,22 @@ def plot_properties_vs_A_separate(aggregated_stats_over_A, A_values, properties,
                     A_values, 
                     means, 
                     yerr=stds, 
-                    fmt='s--', 
+                    fmt='o--', 
                     color=color_map_diff(idx % color_map_diff.N),
                     label=f'p-q={pq_diff}', 
-                    capsize=5
+                    capsize=5,
+                    alpha=0.7,
+                    markersize=3
                 )
             else:
                 plt.plot(
                     A_values, 
                     means, 
-                    's--', 
+                    'o--', 
                     color=color_map_diff(idx % color_map_diff.N),
-                    label=f'p-q={pq_diff}'
+                    label=f'p-q={pq_diff}',
+                    alpha=0.7,
+                    markersize=3
                 )
 
         plt.xlabel('Perturbation Amplitude A', fontsize=14)
@@ -188,8 +196,8 @@ def plot_correlations_vs_A_separate(
 
     # Define color maps for different group types
     color_maps = {
-        'p_plus_q': plt.get_cmap('tab10'),
-        'p_minus_q': plt.get_cmap('tab20')
+        'p_plus_q': plt.get_cmap('Dark2'),
+        'p_minus_q': plt.get_cmap('tab10')
     }
 
     # Helper function to plot and save correlations
@@ -214,7 +222,9 @@ def plot_correlations_vs_A_separate(
                 correlations, 
                 fmt, 
                 color=color_map(idx % color_map.N),
-                label=label
+                label=label,
+                alpha=0.7,
+                markersize=3
             )
 
         plt.xlabel('Perturbation Amplitude A', fontsize=14)
