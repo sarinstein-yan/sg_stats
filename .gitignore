@@ -2,6 +2,8 @@
 .DS_Store
 
 # Ignore plots_A_analysis directory
+result/
+run/
 plots_A_analysis/
 
 # Byte-compiled / optimized / DLL files

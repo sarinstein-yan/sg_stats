@@ -80,7 +80,7 @@ class StatsAnalyzer:
             elif self.distribution == 'gaussian':
                 return np.random.normal(self.mu, sigma)
             elif self.distribution == 'uniform':
-                return np.random.uniform(self.mu, sigma)
+                return np.random.uniform(self.mu-np.sqrt(3)*sigma, self.mu+np.sqrt(3)*sigma)
             else:
                 raise ValueError(f"Unsupported distribution type: {self.distribution}")
 

@@ -51,7 +51,7 @@ def generate_polynomial(q, p, random_perturbations=False, distribution='gaussian
         elif distribution == 'gaussian':
             return np.random.normal(mu, sigma)
         elif distribution == 'uniform':
-            return np.random.uniform(mu, sigma)
+            return np.random.uniform(mu-np.sqrt(3)*sigma, mu+np.sqrt(3)*sigma)
         else:
             raise ValueError(f"Unsupported distribution type: {distribution}. Must be 'gaussian', 'uniform', or a Callable.")
 
