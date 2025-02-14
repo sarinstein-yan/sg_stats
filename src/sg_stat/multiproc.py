@@ -519,6 +519,40 @@ class StatsAnalyzer:
         self.correlations_over_A = correlations_over_A
         self.aggregated_stats_over_A = aggregated_stats_over_A
         return correlations_over_A, aggregated_stats_over_A, A_values
+    
+    def load_aggregated_data(self):
+        """
+        Load the saved aggregated statistics and correlations over A from disk.
+        
+        Returns:
+            tuple: (correlations_over_A, aggregated_stats_over_A)
+        """
+        stats_filename = os.path.join(self.data_folder, "aggregated_stats_over_A.pkl")
+        corr_filename = os.path.join(self.data_folder, "correlations_over_A.pkl")
+        
+        # Load aggregated statistics.
+        if os.path.exists(stats_filename):
+            with open(stats_filename, "rb") as f:
+                aggregated_stats_over_A = pickle.load(f)
+            print(f"Loaded aggregated statistics from {stats_filename}")
+        else:
+            print(f"File {stats_filename} does not exist.")
+            aggregated_stats_over_A = None
+
+        # Load correlations data.
+        if os.path.exists(corr_filename):
+            with open(corr_filename, "rb") as f:
+                correlations_over_A = pickle.load(f)
+            print(f"Loaded aggregated correlations from {corr_filename}")
+        else:
+            print(f"File {corr_filename} does not exist.")
+            correlations_over_A = None
+
+        # Update the instance attributes.
+        self.aggregated_stats_over_A = aggregated_stats_over_A
+        self.correlations_over_A = correlations_over_A
+
+        return correlations_over_A, aggregated_stats_over_A
 
     def plot_properties_vs_A(self, with_error_bars=True):
         """
